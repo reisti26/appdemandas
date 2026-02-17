@@ -458,13 +458,20 @@
                                                         <p className="text-xs text-slate-400">{item.bairro} • {item.registro}</p>
                                                     </div>
                                                     <span className={`text-[10px] font-bold uppercase tracking-widest px-3 py-1.5 rounded-full ${item.status === 'Concluída' ? 'bg-green-100 text-green-600' :
-                                                        item.status === 'Recebida' ? 'bg-blue-100 text-blue-600' :
-                                                            'bg-amber-100 text-amber-600'
+                                                            item.status === 'Recebida' ? 'bg-blue-100 text-blue-600' :
+                                                                item.deleted_at ? 'bg-red-100 text-red-600' :
+                                                                    'bg-amber-100 text-amber-600'
                                                         }`}>
-                                                        {item.status}
+                                                        {item.deleted_at ? 'Cancelada' : item.status}
                                                     </span>
                                                 </div>
                                                 <p className="mt-3 text-sm text-slate-600 line-clamp-2 italic">"{item.descricao}"</p>
+                                                {item.deleted_at && item.motivo_exclusao && (
+                                                    <div className="mt-3 p-3 bg-red-50 rounded-xl border border-red-100">
+                                                        <p className="text-[10px] font-black uppercase tracking-widest text-red-400 mb-1">Motivo do Gabinete</p>
+                                                        <p className="text-xs text-red-700 font-medium">{item.motivo_exclusao}</p>
+                                                    </div>
+                                                )}
                                             </div>
                                         ))}
                                     </div>

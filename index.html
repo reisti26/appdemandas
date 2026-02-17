@@ -20,6 +20,10 @@
     <script src="https://cdn.jsdelivr.net/npm/recharts@2.12.2/umd/Recharts.js"></script>
     <!-- Supabase -->
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <!-- Export Libraries (PDF & Excel) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.23/jspdf.plugin.autotable.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <!-- Google Fonts -->
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
@@ -85,7 +89,7 @@
         ];
 
         const STATUS_OPTIONS = [
-            "Recebida", "Em análise", "Encaminhada à prefeitura", "Em execução", "Concluída", "Arquivada"
+            "Recebida", "Em análise", "Encaminhada à prefeitura", "Em execução", "Concluída", "Arquivada", "Excluídas"
         ];
 
         const TIPOS_OPTIONS = [
@@ -139,6 +143,8 @@
                 case "Em execução": return "blue";
                 case "Em análise": return "yellow";
                 case "Recebida": return "gray";
+                case "Excluída/Cancelada": return "red";
+                case "Excluídas": return "red";
                 case "Encaminhada à prefeitura": return "purple";
                 case "Arquivada": return "gray";
                 default: return "blue";
@@ -176,10 +182,12 @@
 
         // Main App
         const App = () => {
+            const [admin, setAdmin] = useState(null);
             const [activeTab, setActiveTab] = useState('dashboard');
             const [demandas, setDemandas] = useState([]);
             const [bairros, setBairros] = useState([]);
             const [loading, setLoading] = useState(true);
+            const [authLoading, setAuthLoading] = useState(true);
 
             // Filtros e Paginação
             const [searchTerm, setSearchTerm] = useState('');
@@ -187,14 +195,179 @@
             const [filterStatus, setFilterStatus] = useState('Todos');
             const [page, setPage] = useState(0);
             const [totalCount, setTotalCount] = useState(0);
-            const PAGE_SIZE = 10; // Alterado para 10 para testar paginação mais fácil, usuário pediu 20 mas 10 fica melhor em tela pequena
+            const PAGE_SIZE = 10;
 
             const [selectedDemanda, setSelectedDemanda] = useState(null);
             const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-            const [toast, setToast] = useState(null); // { message, type }
+            const [toast, setToast] = useState(null);
 
             const showToast = (message, type = 'success') => {
                 setToast({ message, type });
+            };
+
+            // Configuração: E-mails autorizados a acessar o painel
+            const ADMIN_EMAILS = ['cleberfdosreis@gmail.com']; // ADICIONE OS E-MAILS AUTORIZADOS AQUI
+
+            const isAuthorized = (user) => {
+                if (!user) return false;
+                return ADMIN_EMAILS.includes(user.email);
+            };
+
+            // Verificação de Autenticação
+            useEffect(() => {
+                const checkUser = async () => {
+                    const { data: { session } } = await supabase.auth.getSession();
+                    const user = session?.user || null;
+
+                    if (user && !isAuthorized(user)) {
+                        await supabase.auth.signOut();
+                        setAdmin(null);
+                        showToast('Acesso negado: E-mail não autorizado.', 'error');
+                    } else {
+                        setAdmin(user);
+                    }
+                    setAuthLoading(false);
+                };
+                checkUser();
+
+                const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
+                    const user = session?.user || null;
+                    if (user && !isAuthorized(user)) {
+                        await supabase.auth.signOut();
+                        setAdmin(null);
+                        showToast('E-mail não autorizado para este painel.', 'error');
+                    } else {
+                        setAdmin(user);
+                    }
+                });
+
+                return () => subscription.unsubscribe();
+            }, []);
+
+            const handleLogin = async (e) => {
+                e.preventDefault();
+                setLoading(true);
+                const formData = new FormData(e.target);
+                const email = formData.get('email');
+                const password = formData.get('password');
+
+                try {
+                    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+                    if (error) throw error;
+
+                    if (!isAuthorized(data.user)) {
+                        await supabase.auth.signOut();
+                        throw new Error('Este e-mail não possui permissão de acesso ao painel.');
+                    }
+
+                    showToast('Bem-vindo, Vereador!');
+                } catch (err) {
+                    showToast(err.message, 'error');
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            const handleLogout = async () => {
+                await supabase.auth.signOut();
+                showToast('Logoff realizado.');
+            };
+
+            const handleUpdatePassword = async (e) => {
+                e.preventDefault();
+                setLoading(true);
+                const formData = new FormData(e.target);
+                const password = formData.get('password');
+                const confirmPassword = formData.get('confirmPassword');
+
+                if (password !== confirmPassword) {
+                    showToast('As senhas não coincidem.', 'error');
+                    setLoading(false);
+                    return;
+                }
+
+                try {
+                    const { error } = await supabase.auth.updateUser({ password });
+                    if (error) throw error;
+                    showToast('Senha alterada com sucesso!');
+                    setActiveTab('dashboard');
+                } catch (err) {
+                    showToast(err.message, 'error');
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            const handleExport = async (format) => {
+                setLoading(true);
+                try {
+                    // Buscar TODAS as demandas com os filtros atuais (ignorando paginação)
+                    let query = supabase.from('demandas').select('*');
+
+                    if (filterStatus === 'Excluídas') {
+                        query = query.not('deleted_at', 'is', null);
+                    } else {
+                        query = query.is('deleted_at', null);
+                        if (filterStatus !== 'Todos') query = query.eq('status', filterStatus);
+                    }
+
+                    const { data, error } = await query.order('id', { ascending: false });
+                    if (error) throw error;
+
+                    if (format === 'excel') {
+                        exportToExcel(data);
+                    } else if (format === 'pdf') {
+                        exportToPDF(data);
+                    }
+                } catch (err) {
+                    showToast(`Erro na exportação: ${err.message}`, 'error');
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            const exportToExcel = (data) => {
+                const worksheet = XLSX.utils.json_to_sheet(data.map(d => ({
+                    'Protocolo': d.id,
+                    'Cidadão': d.cidadao,
+                    'Bairro': d.bairro,
+                    'Endereço': d.endereco || '',
+                    'Tipo': d.tipo,
+                    'Urgência': d.urgencia,
+                    'Status': d.deleted_at ? 'Excluída' : d.status,
+                    'Registro': d.registro,
+                    'Motivo Exclusão': d.motivo_exclusao || '',
+                    'Descrição': d.descricao
+                })));
+                const workbook = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(workbook, worksheet, "Demandas");
+                XLSX.writeFile(workbook, `Relatorio_Demandas_${new Date().toISOString().split('T')[0]}.xlsx`);
+                showToast('Relatório Excel gerado!');
+            };
+
+            const exportToPDF = (data) => {
+                const { jsPDF } = window.jspdf;
+                const doc = new jsPDF('landscape');
+
+                doc.text("Relatório de Demandas - Gabinete Digital", 14, 15);
+                doc.setFontSize(10);
+                doc.text(`Gerado em: ${new Date().toLocaleString('pt-BR')}`, 14, 22);
+
+                const tableColumn = ["ID", "Cidadão", "Bairro", "Tipo", "Urgência", "Status", "Data"];
+                const tableRows = data.map(d => [
+                    d.id, d.cidadao, d.bairro, d.tipo, d.urgencia, d.status, d.registro
+                ]);
+
+                doc.autoTable({
+                    head: [tableColumn],
+                    body: tableRows,
+                    startY: 30,
+                    theme: 'grid',
+                    headStyles: { fillStyle: '#2563eb' }
+                });
+
+                doc.save(`Relatorio_Demandas_${new Date().toISOString().split('T')[0]}.pdf`);
+                showToast('Relatório PDF gerado!');
             };
 
             // Debounce searchTerm
@@ -204,103 +377,66 @@
                 return () => clearTimeout(timer);
             }, [searchTerm]);
 
-            // Fetch Data (Demandas com Filtros e Paginação)
+            // Fetch Data
             const fetchDemandas = async () => {
+                if (!admin) return;
                 setLoading(true);
                 try {
-                    let query = supabase
-                        .from('demandas')
-                        .select('*', { count: 'exact' });
+                    let query = supabase.from('demandas').select('*', { count: 'exact' });
+
+                    if (filterStatus === 'Excluídas') {
+                        query = query.not('deleted_at', 'is', null);
+                    } else {
+                        query = query.is('deleted_at', null);
+                        if (filterStatus !== 'Todos') query = query.eq('status', filterStatus);
+                    }
 
                     if (debouncedSearchTerm) {
                         query = query.or(`cidadao.ilike.%${debouncedSearchTerm}%,descricao.ilike.%${debouncedSearchTerm}%`);
                     }
 
-                    if (filterBairro !== 'Todos') {
-                        query = query.eq('bairro', filterBairro);
-                    }
-
-                    if (filterStatus !== 'Todos') {
-                        query = query.eq('status', filterStatus);
-                    }
-
-                    // Paginação
                     const from = page * PAGE_SIZE;
                     const to = from + PAGE_SIZE - 1;
 
-                    const { data, count, error } = await query
-                        .order('id', { ascending: false })
-                        .range(from, to);
-
-                    if (error) {
-                        showToast(`Erro ao carregar (Supabase): ${error.message}`, 'error');
-                        console.error('Supabase Error:', error);
-                    } else {
-                        setDemandas(data || []);
-                        setTotalCount(count || 0);
-                    }
+                    const { data, count, error } = await query.order('id', { ascending: false }).range(from, to);
+                    if (error) throw error;
+                    setDemandas(data || []);
+                    setTotalCount(count || 0);
                 } catch (err) {
-                    console.error('Unexpected Error fetching demandas:', err);
-                    showToast(`Erro inesperado: ${err.message}`, 'error');
+                    showToast(`Erro ao carregar: ${err.message}`, 'error');
                 } finally {
                     setLoading(false);
                 }
             };
 
-            // Fetch Bairros (Apenas uma vez)
+            // Fetch Bairros
             useEffect(() => {
+                if (!admin) return;
                 const fetchBairros = async () => {
                     const { data, error } = await supabase
                         .from('bairros')
                         .select('nome')
                         .order('nome', { ascending: true });
-
-                    if (!error && data) {
-                        setBairros(data.map(b => b.nome));
-                    }
+                    if (!error && data) setBairros(data.map(b => b.nome));
                 };
                 fetchBairros();
-            }, []);
+            }, [admin]);
 
-            // Re-fetch quando filtros mudam
             useEffect(() => {
-                fetchDemandas();
-            }, [page, debouncedSearchTerm, filterBairro, filterStatus]);
+                if (admin) fetchDemandas();
+            }, [admin, page, debouncedSearchTerm, filterBairro, filterStatus]);
 
-            // Resetar página quando filtros mudam (exceto a página em si)
-            useEffect(() => {
-                setPage(0);
-            }, [debouncedSearchTerm, filterBairro, filterStatus]);
+            useEffect(() => setPage(0), [debouncedSearchTerm, filterBairro, filterStatus]);
 
-
-            const stats = useMemo(() => {
-                // Cálculo de estatísticas simplificado, pois agora não temos todos os dados
-                // Para stats precisos, precisariamos de uma query separada sem paginação.
-                // Vou manter os stats baseados na pagina atual ou fazer uma query separada para stats?
-                // Query separada é mais custoso mas correto. Vou desabilitar stats dinâmicos baseados APENAS na visualização atual?
-                // Melhor: Fazer uma query leve apenas para contagem de status para o dashboard funcionar.
-                return {
-                    total: totalCount, // Total real vindo do count do supabase
-                    pendentes: 0, // Placeholder
-                    concluidas: 0, // Placeholder
-                    bairroChart: [],
-                    statusChart: []
-                };
-            }, [totalCount]);
-
-            // Query separada para Dashboard Stats
+            // Dashboard Stats
             const [dashboardStats, setDashboardStats] = useState({
                 total: 0, pendentes: 0, concluidas: 0, bairroChart: [], statusChart: []
             });
 
             useEffect(() => {
-                if (activeTab === 'dashboard') {
+                if (activeTab === 'dashboard' && admin) {
                     const fetchStats = async () => {
-                        // Buscar todos (leve, apenas campos necessários para agrupar)
-                        const { data, error } = await supabase
-                            .from('demandas')
-                            .select('status, bairro');
-
+                        const { data, error } = await supabase.from('demandas').select('status, bairro').is('deleted_at', null);
                         if (error || !data) return;
 
                         const byBairro = data.reduce((acc, d) => {
@@ -325,7 +461,7 @@
                     };
                     fetchStats();
                 }
-            }, [activeTab]);
+            }, [activeTab, admin]);
 
             const handleAddDemanda = async (e) => {
                 e.preventDefault();
@@ -341,13 +477,8 @@
                     descricao: formData.get('descricao')
                 };
 
-                const { data, error } = await supabase
-                    .from('demandas')
-                    .insert([newDemanda])
-                    .select();
-
+                const { data, error } = await supabase.from('demandas').insert([newDemanda]).select();
                 if (error) {
-                    console.error('Error adding demanda:', error);
                     showToast('Erro ao salvar no banco de dados.', 'error');
                 } else if (data) {
                     setDemandas([data[0], ...demandas]);
@@ -358,17 +489,11 @@
             };
 
             const updateStatus = async (id, newStatus) => {
-                const { error } = await supabase
-                    .from('demandas')
-                    .update({ status: newStatus })
-                    .eq('id', id);
-
+                const { error } = await supabase.from('demandas').update({ status: newStatus }).eq('id', id);
                 if (error) {
-                    console.error('Error updating status:', error);
                     showToast('Erro ao atualizar status.', 'error');
                 } else {
                     showToast('Status atualizado com sucesso!');
-                    // Atualiza localmente para refletir na UI imediatamente
                     setDemandas(demandas.map(d => d.id === id ? { ...d, status: newStatus } : d));
                     if (selectedDemanda && selectedDemanda.id === id) {
                         setSelectedDemanda({ ...selectedDemanda, status: newStatus });
@@ -377,23 +502,28 @@
             };
 
             const deleteDemanda = async (id) => {
-                if (!confirm('Tem certeza que deseja excluir esta demanda? Esta ação não pode ser desfeita.')) return;
+                const motivo = prompt('Por favor, informe o motivo da exclusão para registro e aviso ao cidadão:');
+                if (motivo === null) return; // Cancelou o prompt
+                if (!motivo.trim()) {
+                    showToast('O motivo é obrigatório para excluir.', 'error');
+                    return;
+                }
 
-                const { error } = await supabase
-                    .from('demandas')
-                    .delete()
+                const { error } = await supabase.from('demandas')
+                    .update({
+                        deleted_at: new Date().toISOString(),
+                        motivo_exclusao: motivo.trim(),
+                        status: 'Excluída/Cancelada'
+                    })
                     .eq('id', id);
 
                 if (error) {
-                    console.error('Error deleting demanda:', error);
                     showToast('Erro ao excluir demanda.', 'error');
                 } else {
-                    showToast('Demanda excluída com sucesso!');
+                    showToast('Demanda arquivada com sucesso!');
                     setDemandas(demandas.filter(d => d.id !== id));
                     setTotalCount(prev => prev - 1);
-                    if (selectedDemanda && selectedDemanda.id === id) {
-                        setSelectedDemanda(null);
-                    }
+                    if (selectedDemanda && selectedDemanda.id === id) setSelectedDemanda(null);
                 }
             };
 
@@ -403,26 +533,65 @@
                 const localData = JSON.parse(saved);
                 if (!localData || localData.length === 0) return;
 
-                if (confirm(`Encontramos ${localData.length} registros salvos localmente. Deseja enviá-los para o banco de dados em nuvem?`)) {
+                if (confirm(`Sincronizar ${localData.length} registros locais?`)) {
                     setLoading(true);
                     try {
-                        // Remove IDs para o Supabase gerar novos
                         const toInsert = localData.map(({ id, ...rest }) => rest);
                         const { error } = await supabase.from('demandas').insert(toInsert);
-
                         if (error) throw error;
-
                         localStorage.removeItem('demandas_vereador');
-                        showToast('Dados sincronizados com sucesso!');
+                        showToast('Dados sincronizados!');
                         fetchDemandas();
                     } catch (err) {
-                        console.error('Erro na migração:', err);
-                        showToast('Erro ao sincronizar dados.', 'error');
+                        showToast('Erro ao sincronizar.', 'error');
                     } finally {
                         setLoading(false);
                     }
                 }
             };
+
+            if (authLoading) {
+                return (
+                    <div className="min-h-screen flex items-center justify-center bg-slate-50">
+                        {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
+                        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
+                    </div>
+                );
+            }
+
+            if (!admin) {
+                return (
+                    <div className="min-h-screen flex items-center justify-center bg-slate-50 p-6">
+                        {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
+                        <div className="glass p-8 md:p-12 rounded-3xl shadow-xl border-t-8 border-t-primary max-w-md w-full animate-bounce-in">
+                            <div className="flex flex-col items-center mb-8">
+                                <div className="w-16 h-16 bg-primary text-white rounded-2xl flex items-center justify-center shadow-lg shadow-primary/20 mb-4">
+                                    <Icon name="check-circle-2" size={32} />
+                                </div>
+                                <h1 className="text-2xl font-bold text-slate-800">Painel Administrativo</h1>
+                                <p className="text-slate-500">Gabinete Digital - Login do Gestor</p>
+                            </div>
+
+                            <form onSubmit={handleLogin} className="space-y-5">
+                                <div className="space-y-2">
+                                    <label className="text-sm font-bold text-slate-700">E-mail</label>
+                                    <input required name="email" type="email" className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary" placeholder="adm@exemplo.com" />
+                                </div>
+                                <div className="space-y-2">
+                                    <label className="text-sm font-bold text-slate-700">Senha</label>
+                                    <input required name="password" type="password" className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary" placeholder="••••••••" />
+                                </div>
+                                <button disabled={loading} className="w-full bg-primary text-white py-4 rounded-2xl font-bold shadow-lg shadow-primary/20 hover:scale-[1.01] active:scale-95 transition-all">
+                                    {loading ? 'Entrando...' : 'Acessar Painel'}
+                                </button>
+                            </form>
+                            <p className="mt-8 text-center text-xs text-slate-400 font-sans">
+                                Acesso restrito ao gabinete do vereador.
+                            </p>
+                        </div>
+                    </div>
+                );
+            }
 
             return (
                 <div className="flex min-h-screen bg-slate-50 relative">
@@ -449,7 +618,8 @@
                             {[
                                 { id: 'dashboard', label: 'Dashboard', icon: 'layout-dashboard' },
                                 { id: 'list', label: 'Demandas', icon: 'clipboard-list' },
-                                { id: 'add', label: 'Nova Solicitação', icon: 'plus-circle' }
+                                { id: 'add', label: 'Nova Solicitação', icon: 'plus-circle' },
+                                { id: 'password', label: 'Redefinir Senha', icon: 'key' }
                             ].map(item => (
                                 <button
                                     key={item.id}
@@ -465,18 +635,25 @@
                                 </button>
                             ))}
                         </nav>
-                        <div className="absolute bottom-8 left-4 right-4 space-y-2">
+                        <div className="absolute bottom-8 left-4 right-4 space-y-3">
                             {localStorage.getItem('demandas_vereador') && JSON.parse(localStorage.getItem('demandas_vereador')).length > 0 && (
                                 <button
                                     onClick={migrateLocalData}
-                                    className="w-full flex items-center gap-2 px-3 py-2 rounded-lg bg-yellow-50 text-yellow-700 text-xs font-bold border border-yellow-200 hover:bg-yellow-100 transition-all"
+                                    className="w-full flex items-center gap-2 px-3 py-2 rounded-lg bg-yellow-50 text-yellow-700 text-xs font-bold border border-yellow-200 hover:bg-yellow-100 transition-all font-sans"
                                 >
                                     <Icon name="refresh-cw" size={14} /> Sincronizar Dados Locais
                                 </button>
                             )}
-                            <div className="p-4 rounded-2xl bg-primary/5 text-primary">
-                                <p className="text-xs font-semibold uppercase tracking-wider mb-1">Status do Gestor</p>
-                                <p className="text-sm">Logado como: <b>Vereador</b></p>
+
+                            <div className="p-4 rounded-2xl bg-slate-50 border border-slate-100">
+                                <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Administrador</p>
+                                <p className="text-xs font-bold text-slate-700 truncate mb-3">{admin?.email}</p>
+                                <button
+                                    onClick={handleLogout}
+                                    className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl bg-white text-danger text-xs font-bold border border-danger/20 hover:bg-danger/5 transition-all"
+                                >
+                                    <Icon name="log-out" size={14} /> Sair do Painel
+                                </button>
                             </div>
                         </div>
                     </aside>
@@ -607,8 +784,24 @@
                                                         onChange={(e) => setSearchTerm(e.target.value)}
                                                     />
                                                 </div>
-                                                {/* Filtros Container */}
                                                 <div className="flex gap-2 items-center flex-wrap md:flex-nowrap w-full md:w-auto overflow-x-auto pb-2 md:pb-0">
+                                                    <button
+                                                        onClick={() => handleExport('excel')}
+                                                        className="flex items-center gap-2 px-4 py-2 bg-emerald-50 text-emerald-700 rounded-xl text-sm font-bold border border-emerald-200 hover:bg-emerald-100 transition-all whitespace-nowrap"
+                                                        title="Exportar para Excel"
+                                                    >
+                                                        <Icon name="file-spreadsheet" size={18} /> Excel
+                                                    </button>
+                                                    <button
+                                                        onClick={() => handleExport('pdf')}
+                                                        className="flex items-center gap-2 px-4 py-2 bg-rose-50 text-rose-700 rounded-xl text-sm font-bold border border-rose-200 hover:bg-rose-100 transition-all whitespace-nowrap"
+                                                        title="Exportar para PDF"
+                                                    >
+                                                        <Icon name="file-text" size={18} /> PDF
+                                                    </button>
+
+                                                    <div className="w-px h-6 bg-slate-200 mx-2 hidden md:block"></div>
+
                                                     <button
                                                         onClick={() => setFilterBairro('Todos')}
                                                         className={`px-4 py-2 rounded-xl text-sm font-medium whitespace-nowrap transition-all ${filterBairro === 'Todos' ? 'bg-primary text-white' : 'bg-white border text-slate-600'}`}
@@ -767,6 +960,35 @@
                                             </div>
                                         </div>
                                     )}
+                                    {/* Password Reset View */}
+                                    {activeTab === 'password' && (
+                                        <div className="max-w-md mx-auto">
+                                            <div className="glass p-8 rounded-2xl bg-white/30 border-t-4 border-t-primary">
+                                                <h3 className="text-xl font-bold mb-8 flex items-center gap-3">
+                                                    <div className="w-10 h-10 rounded-xl bg-primary/10 text-primary flex items-center justify-center">
+                                                        <Icon name="key" />
+                                                    </div>
+                                                    Alterar Minha Senha
+                                                </h3>
+                                                <form onSubmit={handleUpdatePassword} className="space-y-6">
+                                                    <div className="space-y-2">
+                                                        <label className="text-sm font-bold text-slate-700">Nova Senha</label>
+                                                        <input required name="password" type="password" minLength="6" className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary" placeholder="••••••••" />
+                                                    </div>
+                                                    <div className="space-y-2">
+                                                        <label className="text-sm font-bold text-slate-700">Confirmar Nova Senha</label>
+                                                        <input required name="confirmPassword" type="password" minLength="6" className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary" placeholder="••••••••" />
+                                                    </div>
+                                                    <button disabled={loading} className="w-full bg-primary text-white py-4 rounded-2xl font-bold shadow-lg shadow-primary/20 hover:scale-[1.01] active:scale-95 transition-all">
+                                                        {loading ? 'Salvando...' : 'Atualizar Senha'}
+                                                    </button>
+                                                </form>
+                                                <p className="mt-6 text-center text-xs text-slate-400">
+                                                    Sua senha será atualizada imediatamente para o próximo acesso.
+                                                </p>
+                                            </div>
+                                        </div>
+                                    )}
                                 </>
                             )}
                         </div>
@@ -790,6 +1012,13 @@
                                     </div>
 
                                     <div className="space-y-6">
+                                        {selectedDemanda.deleted_at && selectedDemanda.motivo_exclusao && (
+                                            <div className="p-4 bg-red-50 rounded-2xl border border-red-100">
+                                                <p className="text-[10px] font-black uppercase tracking-widest text-red-400 mb-1">Motivo da Exclusão / Cancelamento</p>
+                                                <p className="text-sm text-red-700 font-bold">{selectedDemanda.motivo_exclusao}</p>
+                                                <p className="text-[10px] text-red-400 mt-2 italic">Excluído em: {new Date(selectedDemanda.deleted_at).toLocaleString('pt-BR')}</p>
+                                            </div>
+                                        )}
                                         <div className="grid grid-cols-2 gap-4">
                                             <div className="p-4 rounded-2xl bg-slate-50">
                                                 <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-1">Cidadão</p>
