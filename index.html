@@ -337,7 +337,7 @@
                     'Status': d.deleted_at ? 'Excluída' : d.status,
                     'Registro': d.registro,
                     'Motivo Exclusão': d.motivo_exclusao || '',
-                    'Descrição': d.descricao
+                    'Relato do Cidadão': d.descricao
                 })));
                 const workbook = XLSX.utils.book_new();
                 XLSX.utils.book_append_sheet(workbook, worksheet, "Demandas");
@@ -353,9 +353,9 @@
                 doc.setFontSize(10);
                 doc.text(`Gerado em: ${new Date().toLocaleString('pt-BR')}`, 14, 22);
 
-                const tableColumn = ["ID", "Cidadão", "Bairro", "Tipo", "Urgência", "Status", "Data"];
+                const tableColumn = ["ID", "Cidadão", "Bairro", "Tipo", "Urgência", "Status", "Data", "Relato"];
                 const tableRows = data.map(d => [
-                    d.id, d.cidadao, d.bairro, d.tipo, d.urgencia, d.status, d.registro
+                    d.id, d.cidadao, d.bairro, d.tipo, d.urgencia, d.status, d.registro, d.descricao
                 ]);
 
                 doc.autoTable({
@@ -363,7 +363,11 @@
                     body: tableRows,
                     startY: 30,
                     theme: 'grid',
-                    headStyles: { fillStyle: '#2563eb' }
+                    headStyles: { fillStyle: '#2563eb' },
+                    columnStyles: {
+                        7: { cellWidth: 80 } // Ajusta largura da coluna do relato
+                    },
+                    styles: { overflow: 'linebreak', cellPadding: 2, fontSize: 8 }
                 });
 
                 doc.save(`Relatorio_Demandas_${new Date().toISOString().split('T')[0]}.pdf`);
