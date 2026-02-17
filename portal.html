@@ -1,0 +1,570 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Portal do Cidadão - Envie sua Demanda</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React & ReactDOM -->
+    <script src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js"></script>
+    <!-- Babel for JSX -->
+    <script src="https://cdn.jsdelivr.net/npm/@babel/standalone/babel.min.js"></script>
+    <!-- Lucide Icons -->
+    <script src="https://cdn.jsdelivr.net/npm/lucide@0.344.0/dist/umd/lucide.min.js"></script>
+    <!-- Supabase -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f8fafc;
+        }
+
+        .glass {
+            background: rgba(255, 255, 255, 0.7);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+        }
+
+        @keyframes bounce-in {
+            0% {
+                transform: scale(0.95);
+                opacity: 0;
+            }
+
+            50% {
+                transform: scale(1.05);
+            }
+
+            100% {
+                transform: scale(1);
+                opacity: 1;
+            }
+        }
+
+        .animate-bounce-in {
+            animation: bounce-in 0.3s ease-out forwards;
+        }
+    </style>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#2563eb',
+                        secondary: '#64748b',
+                        success: '#10b981',
+                        warning: '#f59e0b',
+                        danger: '#ef4444',
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+
+<body class="flex flex-col items-center justify-center min-h-screen p-4 bg-slate-50 text-slate-800">
+    <div id="root" class="w-full max-w-4xl"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+
+        // --- Supabase Config ---
+        const SUPABASE_URL = "https://wopteukjywtkowhgdmbf.supabase.co";
+        const SUPABASE_ANON_KEY = "sb_publishable_-8VbUXEcKC9DKPpzt11AWQ_jF23FAgD";
+        const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+        const TIPOS_OPTIONS = ["Iluminação Pública", "Buracos na Via", "Coleta de Lixo", "Saúde", "Educação", "Segurança", "Transporte", "Outros"];
+
+        const Icon = ({ name, className = "", size = 20 }) => {
+            const ref = React.useRef(null);
+            useEffect(() => {
+                if (ref.current && window.lucide) {
+                    const iconNode = document.createElement('i');
+                    iconNode.setAttribute('data-lucide', name);
+                    iconNode.className = className;
+                    iconNode.style.width = `${size}px`;
+                    iconNode.style.height = `${size}px`;
+
+                    ref.current.innerHTML = '';
+                    ref.current.appendChild(iconNode);
+                    window.lucide.createIcons({
+                        nameAttr: 'data-lucide'
+                    });
+                }
+            }, [name, className, size]);
+            return <span ref={ref} className="inline-flex items-center justify-center"></span>;
+        };
+
+        const Toast = ({ message, type = 'success', onClose }) => {
+            useEffect(() => {
+                const timer = setTimeout(onClose, 3000);
+                return () => clearTimeout(timer);
+            }, [onClose]);
+
+            const bg = type === 'success' ? 'bg-green-500' : 'bg-red-500';
+            const icon = type === 'success' ? 'check-circle' : 'alert-circle';
+
+            return (
+                <div className={`fixed bottom-4 right-4 ${bg} text-white px-6 py-4 rounded-xl shadow-2xl flex items-center gap-3 animate-bounce-in z-50`}>
+                    <Icon name={icon} />
+                    <span className="font-semibold">{message}</span>
+                    <button onClick={onClose} className="ml-2 hover:bg-white/20 p-1 rounded-full">
+                        <Icon name="x" size={16} />
+                    </button>
+                </div>
+            );
+        };
+
+        const Portal = () => {
+            const [user, setUser] = useState(null);
+            const [view, setView] = useState('form'); // 'form', 'history', 'auth'
+            const [authMode, setAuthMode] = useState('login'); // 'login', 'register'
+            const [authSuccess, setAuthSuccess] = useState(false);
+            const [submitted, setSubmitted] = useState(false);
+            const [protocolo, setProtocolo] = useState(null);
+            const [loading, setLoading] = useState(false);
+            const [bairros, setBairros] = useState([]);
+            const [history, setHistory] = useState([]);
+            const [toast, setToast] = useState(null);
+
+            const showToast = (message, type = 'success') => {
+                setToast({ message, type });
+            };
+
+            useEffect(() => {
+                // Verificar sessão atual
+                supabase.auth.getSession().then(({ data: { session } }) => {
+                    setUser(session?.user ?? null);
+                });
+
+                // Escutar mudanças na autenticação
+                const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+                    setUser(session?.user ?? null);
+                });
+
+                return () => subscription.unsubscribe();
+            }, []);
+
+            useEffect(() => {
+                const fetchBairros = async () => {
+                    const { data, error } = await supabase
+                        .from('bairros')
+                        .select('nome')
+                        .order('nome', { ascending: true });
+
+                    if (error) {
+                        console.error('Error fetching bairros:', error);
+                    } else {
+                        setBairros((data || []).map(b => b.nome));
+                    }
+                };
+                fetchBairros();
+            }, []);
+
+            const fetchHistory = async () => {
+                if (!user) return;
+                setLoading(true);
+                const { data, error } = await supabase
+                    .from('demandas')
+                    .select('*')
+                    .eq('user_id', user.id)
+                    .order('id', { ascending: false });
+
+                if (error) {
+                    showToast('Erro ao carregar histórico: ' + error.message, 'error');
+                } else {
+                    setHistory(data || []);
+                }
+                setLoading(false);
+            };
+
+            useEffect(() => {
+                if (view === 'history') fetchHistory();
+            }, [view, user]);
+
+            const handleAuth = async (e) => {
+                e.preventDefault();
+                setLoading(true);
+                setAuthSuccess(false);
+                const formData = new FormData(e.target);
+                const email = formData.get('email');
+                const password = formData.get('password');
+
+                try {
+                    const { data, error } = authMode === 'login'
+                        ? await supabase.auth.signInWithPassword({ email, password })
+                        : await supabase.auth.signUp({
+                            email,
+                            password,
+                            options: {
+                                data: {
+                                    full_name: formData.get('nome')
+                                }
+                            }
+                        });
+
+                    if (error) throw error;
+
+                    if (authMode === 'register') {
+                        setAuthSuccess(true);
+                        showToast('Conta criada com sucesso!');
+                    } else {
+                        showToast('Bem-vindo de volta!');
+                        setView('form');
+                    }
+                } catch (err) {
+                    showToast(err.message, 'error');
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            const handleLogout = async () => {
+                await supabase.auth.signOut();
+                showToast('Até logo!');
+                setView('form');
+            };
+
+            const handleUpdateProfile = async (e) => {
+                e.preventDefault();
+                setLoading(true);
+                const formData = new FormData(e.target);
+                const full_name = formData.get('nome');
+
+                try {
+                    const { error } = await supabase.auth.updateUser({
+                        data: { full_name }
+                    });
+
+                    if (error) throw error;
+
+                    showToast('Perfil atualizado com sucesso!');
+                    setView('form');
+                } catch (err) {
+                    showToast(err.message, 'error');
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                setLoading(true);
+                try {
+                    const formData = new FormData(e.target);
+                    const newDemanda = {
+                        cidadao: formData.get('cidadao') || user?.user_metadata?.full_name || (user ? `Cidadão (${user.email})` : 'Anônimo'),
+                        bairro: formData.get('bairro'),
+                        endereco: formData.get('endereco'),
+                        tipo: formData.get('tipo'),
+                        urgencia: formData.get('urgencia'),
+                        registro: new Date().toISOString().split('T')[0],
+                        status: "Recebida",
+                        descricao: formData.get('descricao'),
+                        user_id: user?.id || null
+                    };
+
+                    const { data, error } = await supabase.from('demandas').insert([newDemanda]).select();
+
+                    if (error) throw error;
+
+                    if (data && data[0]) setProtocolo(data[0].id);
+                    else setProtocolo('Recebido');
+
+                    setSubmitted(true);
+                    showToast('Solicitação enviada com sucesso!');
+                } catch (err) {
+                    showToast('Erro ao enviar: ' + err.message, 'error');
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            return (
+                <div className="relative w-full space-y-6">
+                    {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
+
+                    {/* Header/Nav */}
+                    <div className="flex flex-wrap items-center justify-between gap-4 glass p-4 px-6 rounded-2xl shadow-sm border border-white/50">
+                        <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 bg-primary text-white rounded-xl flex items-center justify-center shadow-lg shadow-primary/20">
+                                <Icon name="megaphone" size={24} />
+                            </div>
+                            <span className="font-bold text-slate-800 hidden sm:inline">Gabinete Digital</span>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                            <button
+                                onClick={() => { setView('form'); setAuthSuccess(false); }}
+                                className={`px-4 py-2 rounded-xl text-sm font-semibold transition-all ${view === 'form' ? 'bg-primary text-white' : 'text-slate-600 hover:bg-slate-100'}`}
+                            >
+                                Novo Relato
+                            </button>
+                            {user ? (
+                                <>
+                                    <button
+                                        onClick={() => setView('history')}
+                                        className={`px-4 py-2 rounded-xl text-sm font-semibold transition-all ${view === 'history' ? 'bg-primary text-white' : 'text-slate-600 hover:bg-slate-100'}`}
+                                    >
+                                        Meu Histórico
+                                    </button>
+                                    <button
+                                        onClick={() => setView('profile')}
+                                        className={`p-2 rounded-xl transition-all ${view === 'profile' ? 'bg-primary text-white shadow-lg shadow-primary/20' : 'text-slate-400 hover:text-primary hover:bg-primary/5'}`}
+                                        title="Meu Perfil"
+                                    >
+                                        <Icon name="user-cog" size={20} />
+                                    </button>
+                                    <button onClick={handleLogout} className="p-2 text-slate-400 hover:text-danger transition-colors" title="Sair">
+                                        <Icon name="log-out" size={20} />
+                                    </button>
+                                </>
+                            ) : (
+                                <button
+                                    onClick={() => { setView('auth'); setAuthSuccess(false); }}
+                                    className={`bg-slate-800 text-white px-5 py-2 rounded-xl text-sm font-bold hover:bg-slate-700 transition-all flex items-center gap-2 ${view === 'auth' ? 'ring-2 ring-primary ring-offset-2' : ''}`}
+                                >
+                                    <Icon name="user" size={16} /> Entrar
+                                </button>
+                            )}
+                        </div>
+                    </div>
+
+                    {/* Main Content */}
+                    <main className="animate-bounce-in">
+                        {view === 'auth' && !user && (
+                            <div className="glass p-8 md:p-12 rounded-3xl shadow-xl border-t-8 border-t-primary max-w-md mx-auto">
+                                {authSuccess ? (
+                                    <div className="text-center space-y-6 py-4 animate-bounce-in">
+                                        <div className="w-20 h-20 bg-green-100 text-green-600 rounded-full flex items-center justify-center mx-auto mb-4">
+                                            <Icon name="mail-check" size={48} />
+                                        </div>
+                                        <h1 className="text-2xl font-bold text-slate-800">Verifique seu E-mail</h1>
+                                        <p className="text-slate-500 text-sm">Conta criada com sucesso no **App de Demandas**! Enviamos um link de confirmação para o seu e-mail. Você precisa clicar nele antes de conseguir fazer login.</p>
+                                        <button
+                                            onClick={() => { setView('form'); setAuthSuccess(false); }}
+                                            className="w-full bg-primary text-white py-4 rounded-2xl font-bold hover:scale-[1.01] active:scale-95 transition-all shadow-lg shadow-primary/20"
+                                        >
+                                            Voltar para o Início
+                                        </button>
+                                    </div>
+                                ) : (
+                                    <>
+                                        <h1 className="text-2xl font-bold text-slate-800 mb-2">
+                                            {authMode === 'login' ? 'Bem-vindo de volta' : 'Crie sua conta'}
+                                        </h1>
+                                        <p className="text-slate-500 mb-8">
+                                            {authMode === 'login' ? 'Acompanhe suas solicitações e tenha voz ativa.' : 'Cadastre-se para gerenciar seus pedidos.'}
+                                        </p>
+
+                                        <form onSubmit={handleAuth} className="space-y-4">
+                                            {authMode === 'register' && (
+                                                <div className="space-y-2">
+                                                    <label className="text-sm font-bold text-slate-700">Nome Completo</label>
+                                                    <input required name="nome" type="text" className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary" placeholder="Como o vereador deve te chamar?" />
+                                                </div>
+                                            )}
+                                            <div className="space-y-2">
+                                                <label className="text-sm font-bold text-slate-700">E-mail</label>
+                                                <input required name="email" type="email" className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary" placeholder="seu@email.com" />
+                                            </div>
+                                            <div className="space-y-2">
+                                                <label className="text-sm font-bold text-slate-700">Senha</label>
+                                                <input required name="password" type="password" className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary" placeholder="••••••••" />
+                                            </div>
+                                            <button disabled={loading} className="w-full bg-primary text-white py-4 rounded-2xl font-bold shadow-lg shadow-primary/20 hover:scale-[1.01] active:scale-95 transition-all">
+                                                {loading ? 'Processando...' : (authMode === 'login' ? 'Entrar' : 'Cadastrar')}
+                                            </button>
+                                        </form>
+                                        <div className="mt-6 text-center">
+                                            <button onClick={() => setAuthMode(authMode === 'login' ? 'register' : 'login')} className="text-sm text-primary font-semibold hover:underline">
+                                                {authMode === 'login' ? 'Não tem conta? Cadastre-se' : 'Já tem conta? Faça login'}
+                                            </button>
+                                        </div>
+                                    </>
+                                )}
+                            </div>
+                        )}
+
+                        {view === 'profile' && user && (
+                            <div className="glass p-8 md:p-12 rounded-3xl shadow-xl border-t-8 border-t-primary max-w-md mx-auto">
+                                <h1 className="text-2xl font-bold text-slate-800 mb-2">Meu Perfil</h1>
+                                <p className="text-slate-500 mb-8">Atualize seus dados de identificação.</p>
+
+                                <form onSubmit={handleUpdateProfile} className="space-y-6">
+                                    <div className="space-y-2">
+                                        <label className="text-sm font-bold text-slate-700">E-mail</label>
+                                        <input disabled value={user.email} className="w-full px-4 py-3 rounded-xl border border-slate-100 bg-slate-50 text-slate-400 outline-none cursor-not-allowed" />
+                                        <p className="text-[10px] text-slate-400 italic">O e-mail não pode ser alterado através deste portal.</p>
+                                    </div>
+                                    <div className="space-y-2">
+                                        <label className="text-sm font-bold text-slate-700">Nome Completo</label>
+                                        <input
+                                            required
+                                            name="nome"
+                                            type="text"
+                                            defaultValue={user?.user_metadata?.full_name || ''}
+                                            className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary"
+                                            placeholder="Como você quer ser chamado?"
+                                        />
+                                    </div>
+                                    <div className="pt-2 space-y-3">
+                                        <button disabled={loading} className="w-full bg-primary text-white py-4 rounded-2xl font-bold shadow-lg shadow-primary/20 hover:scale-[1.01] active:scale-95 transition-all flex items-center justify-center gap-2">
+                                            {loading ? <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div> : <Icon name="save" size={20} />}
+                                            Salvar Alterações
+                                        </button>
+                                        <button type="button" onClick={() => setView('form')} className="w-full text-slate-500 text-sm font-semibold hover:underline">
+                                            Cancelar
+                                        </button>
+                                    </div>
+                                </form>
+                            </div>
+                        )}
+
+                        {view === 'history' && user && (
+                            <div className="glass p-8 md:p-10 rounded-3xl shadow-xl border-t-8 border-t-primary">
+                                <div className="flex items-center justify-between mb-8">
+                                    <h2 className="text-2xl font-bold text-slate-800">Minhas Solicitações</h2>
+                                    <button onClick={fetchHistory} className="text-primary hover:rotate-180 transition-all duration-500">
+                                        <Icon name="refresh-cw" size={20} />
+                                    </button>
+                                </div>
+
+                                {loading && history.length === 0 ? (
+                                    <div className="py-20 text-center text-slate-400">Carregando seus registros...</div>
+                                ) : history.length === 0 ? (
+                                    <div className="py-20 text-center space-y-4">
+                                        <div className="w-16 h-16 bg-slate-50 text-slate-300 rounded-full flex items-center justify-center mx-auto">
+                                            <Icon name="clipboard-list" size={32} />
+                                        </div>
+                                        <p className="text-slate-500">Você ainda não enviou nenhum relato logado.</p>
+                                        <button onClick={() => setView('form')} className="text-primary font-bold">Enviar primeira demanda</button>
+                                    </div>
+                                ) : (
+                                    <div className="grid grid-cols-1 gap-4">
+                                        {history.map(item => (
+                                            <div key={item.id} className="bg-white/50 backdrop-blur-sm p-5 rounded-2xl border border-slate-100 hover:border-primary/20 transition-all">
+                                                <div className="flex flex-wrap items-start justify-between gap-4">
+                                                    <div>
+                                                        <div className="flex items-center gap-2 mb-1">
+                                                            <span className="text-xs font-black text-primary px-2 py-1 bg-primary/5 rounded-lg">#{item.id}</span>
+                                                            <span className="text-sm font-bold text-slate-700">{item.tipo}</span>
+                                                        </div>
+                                                        <p className="text-xs text-slate-400">{item.bairro} • {item.registro}</p>
+                                                    </div>
+                                                    <span className={`text-[10px] font-bold uppercase tracking-widest px-3 py-1.5 rounded-full ${item.status === 'Concluída' ? 'bg-green-100 text-green-600' :
+                                                        item.status === 'Recebida' ? 'bg-blue-100 text-blue-600' :
+                                                            'bg-amber-100 text-amber-600'
+                                                        }`}>
+                                                        {item.status}
+                                                    </span>
+                                                </div>
+                                                <p className="mt-3 text-sm text-slate-600 line-clamp-2 italic">"{item.descricao}"</p>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                        {(view === 'form' || user) && view !== 'history' && view !== 'auth' && view !== 'profile' && (
+                            <>
+                                {submitted ? (
+                                    <div className="glass p-12 rounded-3xl text-center space-y-6 shadow-xl border-t-8 border-t-green-500">
+                                        <div className="w-20 h-20 bg-green-100 text-green-600 rounded-full flex items-center justify-center mx-auto mb-4 animate-bounce">
+                                            <Icon name="check-circle-2" size={48} />
+                                        </div>
+                                        <h2 className="text-3xl font-bold text-slate-800">Solicitação Enviada!</h2>
+                                        <div className="bg-slate-50 p-6 rounded-2xl border border-slate-100 inline-block mx-auto">
+                                            <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-1">Seu Protocolo</p>
+                                            <p className="text-4xl font-black text-primary">#{protocolo}</p>
+                                        </div>
+                                        <p className="text-slate-600 text-lg">Obrigado por contribuir com a melhoria da nossa cidade. O gabinete do Vereador já recebeu o seu relato.</p>
+                                        <button onClick={() => { setSubmitted(false); setProtocolo(null); }} className="bg-primary text-white px-8 py-3 rounded-xl font-bold hover:scale-105 active:scale-95 transition-all w-full md:w-auto">
+                                            Enviar outro relato
+                                        </button>
+                                    </div>
+                                ) : (
+                                    <div className="glass p-8 md:p-12 rounded-3xl shadow-xl border-t-8 border-t-primary">
+                                        <div className="flex items-center gap-4 mb-8">
+                                            <div className="w-12 h-12 bg-primary/10 text-primary rounded-2xl flex items-center justify-center">
+                                                <Icon name="megaphone" size={28} />
+                                            </div>
+                                            <div>
+                                                <h1 className="text-2xl font-bold text-slate-800">Portal do Cidadão</h1>
+                                                <p className="text-slate-500">Gabinete Digital - Registre sua demanda abaixo</p>
+                                            </div>
+                                        </div>
+
+                                        <form onSubmit={handleSubmit} className="space-y-6">
+                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                                <div className="space-y-2">
+                                                    <label className="text-sm font-bold text-slate-700">Seu Nome Completo {!user && <span className="text-danger">*</span>}</label>
+                                                    <input
+                                                        required={!user}
+                                                        name="cidadao"
+                                                        defaultValue={user?.user_metadata?.full_name || ''}
+                                                        className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary"
+                                                        placeholder={user ? "Opcional (usaremos seu nome de cadastro)" : "Ex: Maria José"}
+                                                    />
+                                                </div>
+                                                <div className="space-y-2">
+                                                    <label className="text-sm font-bold text-slate-700">Seu Bairro</label>
+                                                    <select name="bairro" className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                                                        {bairros.map(b => <option key={b} value={b}>{b}</option>)}
+                                                    </select>
+                                                </div>
+                                                <div className="space-y-2 md:col-span-2">
+                                                    <label className="text-sm font-bold text-slate-700">Seu Endereço Completo</label>
+                                                    <input required name="endereco" className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary" placeholder="Rua, Número, Referência..." />
+                                                </div>
+                                                <div className="space-y-2">
+                                                    <label className="text-sm font-bold text-slate-700">Tipo de Problema</label>
+                                                    <select name="tipo" className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                                                        {TIPOS_OPTIONS.map(t => <option key={t} value={t}>{t}</option>)}
+                                                    </select>
+                                                </div>
+                                                <div className="space-y-2">
+                                                    <label className="text-sm font-bold text-slate-700">Urgência Percebida</label>
+                                                    <select name="urgencia" className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                                                        <option value="Baixa">Baixa - Pode aguardar</option>
+                                                        <option value="Média">Média - Necessita atenção</option>
+                                                        <option value="Alta">Alta - Problema urgente</option>
+                                                        <option value="Crítica">Crítica - Risco iminente</option>
+                                                    </select>
+                                                </div>
+                                            </div>
+                                            <div className="space-y-2">
+                                                <label className="text-sm font-bold text-slate-700">Descrição Detalhada</label>
+                                                <textarea required name="descricao" rows="4" className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary" placeholder="Descreva o que está acontecendo..."></textarea>
+                                            </div>
+
+                                            <button type="submit" disabled={loading} className={`w-full bg-primary text-white py-4 rounded-2xl font-bold shadow-lg shadow-primary/20 hover:scale-[1.01] active:scale-95 transition-all flex items-center justify-center gap-2 ${loading ? 'opacity-70' : ''}`}>
+                                                {loading ? <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div> : <Icon name="send" size={20} />}
+                                                Enviar para o Vereador
+                                            </button>
+                                        </form>
+
+                                        <footer className="mt-8 pt-8 border-t border-slate-100 text-center text-xs text-slate-400">
+                                            Este é um canal direto de comunicação com o gabinete do Vereador.
+                                        </footer>
+                                    </div>
+                                )}
+                            </>
+                        )}
+                    </main>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<Portal />);
+    </script>
+</body>
+
+</html>
